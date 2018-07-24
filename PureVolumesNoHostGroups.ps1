@@ -1,5 +1,5 @@
-﻿$api_token = "dcea5e9f-f535-de9e-24fa-cdff7f1451aa" 
-$ArrayAddress = '10.224.112.110' 
+﻿$api_token = "x-x-x-x-x" 
+$ArrayAddress = 'x.x.x.x' 
 
 $FlashArray = New-PfaArray -EndPoint $ArrayAddress -ApiToken $api_token -IgnoreCertificateError 
 $Volumes = Get-PfaVolumes -Array $FlashArray
