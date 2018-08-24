@@ -12,7 +12,7 @@ $SmtpTo = "email@domain.com"
 $getresponse = Invoke-WebRequest -Uri $website 
 If($getresponse.StatusCode -notcontains "200")
 {
-    Send-MailMessage -To $SmtpTo -Subject "$website GET Issue" -SmtpServer $SmtpServer -From NoReply@rsna.org -Body "GET to $website failed to respond with a 200 status code."
+    Send-MailMessage -To $SmtpTo -Subject "$website GET Issue" -SmtpServer $SmtpServer -From NoReply@domain.com -Body "GET to $website failed to respond with a 200 status code."
 }
 #create a variable out of the response of our post 
 $postresponse = Invoke-WebRequest -Uri $website -Method POST -Body $fields
