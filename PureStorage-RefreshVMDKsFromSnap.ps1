@@ -1,33 +1,33 @@
 ﻿# PREREQUISITES & ASSUMPTIONS
 # * Assumes execution directly from development SQL Server and that all drive letters match from production to development instances.
 # * Assumes logs and database have their own VMDK disks.
+# * Assumes production and development VMs are in the same vSphere Cluster with the same host group mapping on the FlashArray
 # * Script to be run directly on development instance.  Tested with development cloned from production.
 # * Assumes the term 'snap' is only used for datastores built from snapshots.
-# * Assumes the dev VM has had its data/log disks removed after being cloned from production, but before running this script.
 # * The script will fail if volumes are part of a volume group.
 
 # Check for required modules and install if needed
 Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
 If (-Not(Get-Module -ListAvailable -Name PureStoragePowerShellSDK)) {
-        Install-Module -Name PureStoragePowerShellSDK -Scope AllUsers
+        Install-Module -Name PureStoragePowerShellSDK -Scope CurrentUser
 }
 If (-Not(Get-Module -ListAvailable -Name VMware.VIM*)) {
-        Install-Module -Name VMware.VIM -Scope AllUsers
+        Install-Module -Name VMware.VIM -Scope CurrentUser
 }
 #############################
 # SET THESE VARIABLES BELOW #                           
 #############################
 
 # FLASHARRAY CONNECTION INFO
-$ArrayAddress = "x.x.x.x" # ENTER IP OR DNS OF FLASHARRAY
-$Token = "x.x.x.x" # ENTER API TOKEN FROM FLASHARRAY
+$ArrayAddress = "xxx.xxx.xxx.xxx" # ENTER IP OR DNS OF FLASHARRAY
+$Token = "xxx-xxxx-xxxx-xxxx" # ENTER API TOKEN FROM FLASHARRAY
 
 # VMWARE INFORMATION
-$vcenter = 'x.x.x.x' # ENTER IP OR DNS NAME OF VCENTER
+$vcenter = '111.222.333.444' # ENTER IP OR DNS NAME OF VCENTER
 $UserName = 'administrator@vsphere.local' # VSPHERE USERNAME
-$SecurePassword = 'password' | ConvertTo-SecureString -AsPlainText -Force
-$DevVM = "dev" # NAME OF DEVELOPMENT SQL VM
-$ProdVM = "prod" # NAME OF PRODUCTION SQL VM
+$SecurePassword = 'SuperPassword!!!' | ConvertTo-SecureString -AsPlainText -Force
+$DevVM = "AwesomeDevelopment" # NAME OF DEVELOPMENT SQL VM
+$ProdVM = "AwesomeProduction" # NAME OF PRODUCTION SQL VM
 
 # Enter the VMDK numbers
 $Logs = "1" #VMDK number of Logs disk
@@ -35,21 +35,19 @@ $Data = "2" #VMDK number of Data disk
 
 #############################
 
-# CREATE FLASHARRAY CONNECTION
+# Connect to FlashArray
 $FlashArray = New-PfaArray -EndPoint $ArrayAddress -ApiToken $Token -IgnoreCertificateError
 
-# CREATE VMWARE CONNECTION
+# Connect to vCenter
 $cred = New-Object System.Management.Automation.PSCredential -ArgumentList $UserName, $SecurePassword
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -confirm:$false
 Connect-VIServer -server $vcenter -Credential $cred -WarningAction SilentlyContinue
 
-# MATCH VM TO CLUSTER
-$cluster = (get-cluster -vm $prodvm).name
+# Match development VM to vSphere Cluster and gather host information
+$Cluster = (Get-Cluster -VM $DevVM).Name
+$Hosts = Get-Cluster $Cluster | Get-VMhost -State Connected
 
-# GATHER HOST DATA
-$hosts = get-cluster $cluster | get-vmhost -State connected
-
-# MATCH DATASTORE TO PURE VOLUME
+# Match production datastore to FlashArray volume
 $datastore = Get-Datastore -VM $ProdVm
 $lun = $datastore.ExtensionData.Info.Vmfs.Extent.DiskName
 $volserial = ($lun.ToUpper()).substring(12)
@@ -57,33 +55,34 @@ $purevolumes = Get-PfaVolumes -Array $FlashArray
 $ProdVol = ($purevolumes | where-object { $_.serial -eq $volserial }).Name
 $DevVol = "$ProdVol-Dev"
 
-# FIND HOST GROUP FOR PROD VOLUME
+# Find FlashArray host group for production volume
 $HGROUP = (Get-PFAVolumeHostGroupConnections -Array $FlashArray -VolumeName $ProdVol).hgroup[0]
 
-# STOP SQL SERVICE
+# Stop the SQL service and take all Windows disks offline except system drive
 Stop-Service -Name MSSQLSERVER
+Get-Disk | Where-Object IsSystem -eq $False | Set-Disk -IsOffline:$True
 
-# OFFLINE SQL DISKS IN WINDOWS
-# ALL DISKS EXCEPT SYSTEM WILL GO OFFLINE
-Get-Disk | where-object IsSystem -eq $False | Set-Disk -IsOffline:$True
+# Remove any VMDK from a snapshot datastore or the logs/data VMDK
+$GetDisks = Get-HardDisk -VM $DevVM
+ForEach ($Disk in $GetDisks){
+        If ($Disk.Filename -like '*snap*' -or "*_$logs.vmdk" -or "*_$data.vmdk") {
+        Remove-HardDisk -Confirm:$false
+        }
+}
 
-# REMOVE PREVIOUS RUN VMDKS FROM DEVELOPMENT
-# ASSUMES CLONED DISKS ALREADY REMOVED
-Get-HardDisk -VM $DevVM | Where-Object {$_.Filename -like '*snap*'} | Remove-HardDisk -Confirm:$false
-
-# REMOVE DATASTORE FROM VMWARE
-$SNAPDS = Get-Datastore -Name 'snap*'
-If ($SNAPDS.count -ge 1){
-    Remove-Datastore -Datastore $SNAPDS -VMhost $hosts[0] -confirm:$false
+# Remove the snapshot datastore from VMware, destroy and eradicate volume on the FlashArray
+# Only removes snapshot volumes mounted to development VM
+$SnapDatastore = Get-Datastore -Name 'snap*' -RelatedObject $DevVM
+If ($SnapDatastore.count -ge 1){
+    Remove-Datastore -Datastore $SnapDatastore -VMhost $hosts[0] -confirm:$false
     Remove-PfaHostGroupVolumeConnection -Array $FlashArray -VolumeName $DevVol -HostGroupName $hgroup
     Remove-PfaVolumeOrSnapshot -Array $FlashArray -Name $DevVol 
     Remove-PfaVolumeOrSnapshot -Array $FlashArray -Name $DevVol -Eradicate
     Get-Cluster $cluster | Get-VMHost | Get-VMHostStorage -RescanAllHba -RescanVmfs
 }
 
-# REFRESH PRODUCTION VOLUME TO DEVELOPMENT
+# Build a development volume from production, attach it to the host group
 New-PfaVolume -Array $FlashArray -VolumeName $DevVol -Source $ProdVol -Overwrite
-# ATTACH VOLUME TO HOST GROUP
 New-PfaHostGroupVolumeConnection -Array $FlashArray -HostGroupName $hgroup -VolumeName $DevVol
 
 # VMWARE WORK
@@ -93,20 +92,15 @@ $esxcli = $hosts[0] | get-esxcli
 $esxcli.storage.vmfs.snapshot.resignature($ProdVol)
 Get-Cluster $cluster | Get-VMHost | Get-VMHostStorage -RescanAllHba -RescanVmfs
 
-# ATTACH SNAP VMDKS TO VM
-$SNAPDS = Get-Datastore -Name 'snap*'
-# MODIFY TO MATCH VMDK NUMBERING AS NEEDED
-New-HardDisk -VM $DevVM -DiskPath "[$SNAPDS] $ProdVM/${PRODVM}_$Logs.vmdk" 
-New-HardDisk -VM $DevVM -DiskPath "[$SNAPDS] $ProdVM/${PRODVM}_$Data.vmdk" 
+# Attach snapshot VMDKs
+$SnapDatastore = Get-Datastore -Name 'snap*'
+New-HardDisk -VM $DevVM -DiskPath "[$SnapDatastore] $ProdVM/${PRODVM}_$Logs.vmdk" 
+New-HardDisk -VM $DevVM -DiskPath "[$SnapDatastore] $ProdVM/${PRODVM}_$Data.vmdk" 
 
-# ONLINE SQL DISKS
-Get-Disk | ? IsOffline | Set-Disk -IsOffline:$false 
-
-# START SQL SERVICE
+# Bring Windows disks online and start SQL services
+Get-Disk | Where-Object $_.IsOffline | Set-Disk -IsOffline:$false 
 Start-Service -Name MSSQLSERVER
 
-# DISCONNECT VCENTER
+# Disconnect sessions
 Disconnect-VIServer -Server $vcenter -Confirm:$false
-
-# DISCONNECT FLASHARRAY
 Disconnect-PfaArray -Array $FlashArray
