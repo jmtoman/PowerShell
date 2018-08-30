@@ -85,7 +85,7 @@ If ($SnapDatastore.count -ge 1){
 New-PfaVolume -Array $FlashArray -VolumeName $DevVol -Source $ProdVol -Overwrite
 New-PfaHostGroupVolumeConnection -Array $FlashArray -HostGroupName $hgroup -VolumeName $DevVol
 
-# VMWARE WORK
+# Resignature and mount in vSphere
 Get-Cluster $cluster | Get-VMHost | Get-VMHostStorage -RescanAllHba -RescanVmfs
 $hosts = get-cluster $cluster | get-vmhost -State connected
 $esxcli = $hosts[0] | get-esxcli
