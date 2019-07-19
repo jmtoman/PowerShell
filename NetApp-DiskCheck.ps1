@@ -8,24 +8,14 @@ $controllers = Get-Content C:\Lists.txt
 $mailto = user@email.com
 $mailfrom = user@email.com
 #connect to the controllers from our text file
-ForEach ($controller in $controllers)
-
-{
+ForEach ($controller in $controllers){
     Connect-NaController $controller -Credential $cred
     #check for the word broken in the status field
     $broken = get-nadisk | where {$_.status -contains "broken"}
-
 }
 
 #if the status field has the word broken, send an email
-If($broken)
-{
-
+If($broken){
 	Send-MailMessage -To $mailto -Subject "Broken disks in NetApp Controller $controller" -SmtpServer 1.1.1.1 -From $mailfrom -Body "Broken disks in NetApp Controller $controller"
-
 }
 
-Else
-{
-
-Exit
